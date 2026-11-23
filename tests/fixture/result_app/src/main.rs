@@ -1,6 +1,6 @@
 mod golang;
 
-use golang::{EmptyRequest, GolangCallResult, HashRequest};
+use golang::{EmptyRequest, GolangCallResult, HashRequest, HashResponse};
 use std::time::{Duration, Instant};
 
 // Compile-time proof that the generated wrapper has the expected signature:
@@ -8,6 +8,9 @@ use std::time::{Duration, Instant};
 #[allow(dead_code)]
 fn assert_wrapper_signature() {
     let _f: fn(HashRequest) -> _ = GolangCallResult::md5;
+    let _s: fn(EmptyRequest) -> Result<HashResponse, rust2go::IpcError> =
+        GolangCallResult::newID;
+    let _o: fn(EmptyRequest) -> Result<(), rust2go::IpcError> = GolangCallResult::Init;
 }
 
 // Mirror the real project's call-site shape: a function returning
@@ -30,12 +33,33 @@ async fn call_ping_take_ok(req: EmptyRequest) -> Result<bool, String> {
 #[tokio::main]
 async fn main() {
     std::env::set_var("RUST2GO_IPC_ASYNC_TIMEOUT_SECS", "1");
+    std::env::set_var("RUST2GO_IPC_SYNC_TIMEOUT_SECS", "1");
 
     let ok = call_ping_take_ok(EmptyRequest {})
         .await
         .expect("ping must succeed");
     assert!(ok, "ping ok flag");
     println!("ping ok={}", ok);
+
+    // Oneway methods now converge on Result<(), IpcError> instead of silently
+    // dropping a write failure.
+    GolangCallResult::Init(EmptyRequest {}).expect("oneway wrapper must return Ok");
+
+    // Sync-with-return: Go sleeps 4s, Rust read deadline is 1s. The generated
+    // wrapper must return Err(SyncTimeout) instead of panicking/aborting.
+    let started = Instant::now();
+    let result = GolangCallResult::newID(EmptyRequest {});
+    let elapsed = started.elapsed();
+    assert!(result.is_err(), "slow sync handler must yield Err(SyncTimeout)");
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "sync wrapper must converge near 1s, took {:?}",
+        elapsed
+    );
+    println!(
+        "newID converged via Err(SyncTimeout) in {:?} (Go sleeps 4s)",
+        elapsed
+    );
 
     // Go handler `md5` sleeps 4s; wrapper timeout is 1s. Must converge to Err
     // at ~1s via IpcError -> String -> ?, well before the Go response arrives.

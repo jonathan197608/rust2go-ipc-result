@@ -1,9 +1,9 @@
 [package]
 name = "rust2go-ipc-result"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "MIT"
-description = "Companion #[r2g_result] attribute: timeout + Result wrappers for rust2go-ipc async calls"
+description = "Companion #[r2g_result] attribute: timeout + Result wrappers for rust2go-ipc sync and async calls"
 documentation = "https://docs.rs/rust2go-ipc-result"
 readme = "README.md"
 repository = "https://github.com/jonathan197608/rust2go-ipc-result"

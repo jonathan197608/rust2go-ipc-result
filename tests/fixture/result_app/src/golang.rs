@@ -33,6 +33,7 @@ pub struct CommonResponse {
 #[r2g]
 pub trait GolangCall {
     fn Init(req: EmptyRequest);
+    fn newID(req: EmptyRequest) -> HashResponse;
     #[drop_safe_ret]
     async fn md5(req: HashRequest) -> HashResponse;
     #[drop_safe_ret]
