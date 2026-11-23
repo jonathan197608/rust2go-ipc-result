@@ -1,0 +1,3 @@
+# Keep all text files LF-only on every platform. The proc-macro source is
+# compiled verbatim; stable line endings avoid noisy cross-platform diffs.
+* text=auto eol=lf

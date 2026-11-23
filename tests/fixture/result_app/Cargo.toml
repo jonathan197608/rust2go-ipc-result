@@ -1,0 +1,15 @@
+[package]
+name = "r2g-result-check"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+rust2go = { package = "rust2go-ipc", path = "../../../../rust2go-ipc" }
+rust2go-ipc-result = { path = "../../.." }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+
+[build-dependencies]
+rust2go = { package = "rust2go-ipc", path = "../../../../rust2go-ipc", features = ["build"] }
+
+[workspace]
