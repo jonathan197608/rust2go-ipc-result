@@ -179,4 +179,15 @@ mod tests {
         let trat: ItemTrait = syn::parse_str("pub trait GolangCall { async fn ping(); }").unwrap();
         assert!(expand(trat).is_err());
     }
+
+    #[test]
+    fn preserves_r2g_include_binding_macro_item() {
+        // Real-project shape: r2g_include_binding!() is a TraitItem::Macro and
+        // must be re-emitted untouched for #[r2g] to process.
+        let out = expand_str(
+            "#[r2g] pub trait GolangCall { rust2go::r2g_include_binding!(); async fn md5(req: Req) -> Resp; }",
+        );
+        assert!(out.contains("r2g_include_binding !"));
+        assert!(out.contains("GolangCallImpl :: md5"));
+    }
 }
