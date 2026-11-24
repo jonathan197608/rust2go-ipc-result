@@ -64,7 +64,7 @@ GolangCallResult::Init(req)?;
 | `RUST2GO_IPC_ASYNC_TIMEOUT_SECS` | 600 | 1..=86400 | Deadline for each generated async wrapper |
 | `RUST2GO_IPC_SYNC_TIMEOUT_SECS` | 30 | 1..=86400 | Read deadline for raw sync calls and generated sync wrappers |
 
-Out-of-range or unparseable values warn on stderr **once per key per process** and fall back to the default (never panic) — a bad deployment value must not flood stderr on every call. Values are read on each call, so they can be tuned without recompilation. Runtime 0.2.4+ also pre-flights async payload size against the 64 MiB protocol limit and returns `Err(IpcError::PayloadTooLarge)` instead of a poll-time panic; this requires `rust2go-ipc` 0.2.4+ (its generated `__r2g_payload_len_*` helper).
+Out-of-range or unparseable values warn on stderr **once per key per process** and fall back to the default (never panic) — a bad deployment value must not flood stderr on every call. Both values are read by the Rust wrappers on each call, so caller-side deadlines can be tuned without recompilation; note the Go server's `RUST2GO_IPC_SYNC_TIMEOUT_SECS`-derived backpressure wait is sampled once at server start, so changing that env requires a server restart to affect the Go side. Runtime 0.2.4+ also pre-flights async payload size against the 64 MiB protocol limit and returns `Err(IpcError::PayloadTooLarge)` instead of a poll-time panic; this requires `rust2go-ipc` 0.2.4+ (its generated `__r2g_payload_len_*` helper).
 
 ## Notes
 
