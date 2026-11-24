@@ -162,17 +162,20 @@ fn expand(trat: ItemTrait) -> syn::Result<proc_macro2::TokenStream> {
             //   - bare `Resp` otherwise.
             // The wrapper must destructure accordingly, or a plain async method
             // fails to compile (E0308: expected Resp, found tuple).
+            // Match upstream #[r2g] exactly: it recognises these attributes
+            // only as a single-segment, argument-free path via `get_ident()`.
+            // Using `path().segments.last()` here would also match qualified
+            // paths (`#[rust2go::drop_safe_ret]`) and `Meta::List`
+            // (`#[drop_safe_ret()]`), which upstream treats as absent — that
+            // mismatch makes the wrapper destructure a tuple Output the
+            // upstream never produces, and omits `unsafe` on an unsafe fn.
             let drop_safe_ret = f.attrs.iter().any(|a| {
-                a.path()
-                    .segments
-                    .last()
-                    .is_some_and(|seg| seg.ident == "drop_safe_ret")
+                matches!(&a.meta, Meta::Path(p)
+                    if p.get_ident().is_some_and(|id| id == "drop_safe_ret"))
             });
             let drop_safe = f.attrs.iter().any(|a| {
-                a.path()
-                    .segments
-                    .last()
-                    .is_some_and(|seg| seg.ident == "drop_safe")
+                matches!(&a.meta, Meta::Path(p)
+                    if p.get_ident().is_some_and(|id| id == "drop_safe"))
             });
             let ok_pattern = if drop_safe_ret {
                 quote! { ::core::result::Result::Ok((__r2g_resp, _)) }
@@ -305,6 +308,41 @@ mod tests {
             without.contains("unsafe { TImpl :: a"),
             "non-drop-safe Impl method is unsafe fn"
         );
+    }
+
+    #[test]
+    fn async_wrapper_ignores_non_bare_drop_safe_attributes() {
+        // Upstream #[r2g] uses `Meta::Path(p) if p.get_ident() == Some(..)`,
+        // which only matches a bare single-segment attribute. A qualified path
+        // or an attribute with args is treated as ABSENT by upstream, so the
+        // wrapper must do the same — otherwise it destructures a tuple Output
+        // that upstream never produces and omits `unsafe` on an unsafe fn.
+        let qualified =
+            expand_str("pub trait T { #[rust2go::drop_safe_ret] async fn a(req: Req) -> Resp; }");
+        assert!(
+            qualified.contains("Ok (__r2g_resp)"),
+            "qualified drop_safe_ret must NOT trigger tuple destructure"
+        );
+        assert!(
+            qualified.contains("unsafe { TImpl :: a"),
+            "qualified drop_safe_ret must NOT suppress unsafe"
+        );
+
+        let with_args =
+            expand_str("pub trait T { #[drop_safe_ret()] async fn a(req: Req) -> Resp; }");
+        assert!(
+            with_args.contains("Ok (__r2g_resp)"),
+            "drop_safe_ret() with args must NOT trigger tuple destructure"
+        );
+        assert!(
+            with_args.contains("unsafe { TImpl :: a"),
+            "drop_safe_ret() with args must NOT suppress unsafe"
+        );
+
+        // A bare attribute must still work (guards against over-correction).
+        let bare = expand_str("pub trait T { #[drop_safe_ret] async fn a(req: Req) -> Resp; }");
+        assert!(bare.contains("Ok ((__r2g_resp , _))"));
+        assert!(!bare.contains("unsafe { TImpl"));
     }
 
     #[test]
