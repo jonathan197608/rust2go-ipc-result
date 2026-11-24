@@ -117,6 +117,19 @@ fn expand(trat: ItemTrait) -> syn::Result<proc_macro2::TokenStream> {
                 FnArg::Receiver(_) => None,
             })
             .collect();
+        // The generated wrapper introduces `__r2g_*` locals (e.g. `__r2g_len`,
+        // `__r2g_fut`). A parameter using that prefix would be shadowed and fed
+        // to the Impl call by mistake. The builder rejects the same prefix on
+        // the schema side; keep the guard here too so this standalone macro
+        // fails fast with a clear diagnostic even with pre-generated bindings.
+        for name in &arg_names {
+            if name.to_string().starts_with("__r2g_") {
+                return Err(syn::Error::new_spanned(
+                    name,
+                    "#[r2g_result]: parameter names starting with `__r2g_` are reserved",
+                ));
+            }
+        }
         // The pre-flight helper takes `&OwnedTy` for every parameter. Owned
         // args are borrowed; a trait param already declared `&T` is forwarded
         // as-is so the wrapper keeps ownership for the subsequent Impl call.
@@ -399,6 +412,19 @@ mod tests {
     fn async_method_without_response_is_rejected() {
         let trat: ItemTrait = syn::parse_str("pub trait GolangCall { async fn ping(); }").unwrap();
         assert!(expand(trat).is_err());
+    }
+
+    #[test]
+    fn rejects_reserved_r2g_prefixed_parameter() {
+        // The wrapper emits `__r2g_*` locals; a parameter with that prefix
+        // would be shadowed and forwarded to the Impl call by mistake.
+        let trat: ItemTrait =
+            syn::parse_str("pub trait T { fn f(__r2g_len: Req) -> Resp; }").unwrap();
+        let err = expand(trat).expect_err("reserved parameter must be rejected");
+        assert!(
+            err.to_string().contains("__r2g_"),
+            "diagnostic must name the reserved prefix, got: {err}"
+        );
     }
 
     #[test]

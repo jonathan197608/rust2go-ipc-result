@@ -17,6 +17,7 @@ fn assert_wrapper_signature() {
 // `Result<T, String>` (async_graphql::Error also has From<String>) and using
 // `(&mut fut).await.map_err(|e| e.to_string())?`. This type-checks the exact
 // conversion chain used in the migrated query.rs / mutation.rs / notice.rs.
+#[allow(dead_code)] // compile-time proof of the Result<IpcError> -> Result<String> chain
 async fn call_md5(req: HashRequest) -> Result<String, String> {
     let fut = GolangCallResult::md5(req);
     tokio::pin!(fut);
@@ -66,7 +67,11 @@ async fn main() {
     let started = Instant::now();
     let result = GolangCallResult::newID(EmptyRequest {});
     let elapsed = started.elapsed();
-    assert!(result.is_err(), "slow sync handler must yield Err(SyncTimeout)");
+    let err = result.err().expect("slow sync handler must yield Err");
+    assert!(
+        matches!(err, rust2go::IpcError::SyncTimeout { .. }),
+        "slow sync handler must yield Err(SyncTimeout), got {err}"
+    );
     assert!(
         elapsed < Duration::from_secs(3),
         "sync wrapper must converge near 1s, took {:?}",
@@ -77,24 +82,31 @@ async fn main() {
         elapsed
     );
 
-    // Go handler `md5` sleeps 4s; wrapper timeout is 1s. Must converge to Err
-    // at ~1s via IpcError -> String -> ?, well before the Go response arrives.
+    // Go handler `md5` sleeps 4s; wrapper timeout is 1s. Must converge to the
+    // exact IpcError::Timeout variant at ~1s, well before the Go response
+    // arrives. Assert the variant (not just is_err) so a mislabelled error
+    // (e.g. Connect/Read) cannot pass.
     let started = Instant::now();
-    let result = tokio::time::timeout(Duration::from_secs(8), call_md5(HashRequest {
-        message: "x".into(),
-    }))
+    let result = tokio::time::timeout(
+        Duration::from_secs(8),
+        GolangCallResult::md5(HashRequest { message: "x".into() }),
+    )
     .await
     .expect("outer 8s guard: wrapper must converge on its own 1s timeout");
     let elapsed = started.elapsed();
 
-    assert!(result.is_err(), "slow handler must yield Err(Timeout)");
+    let err = result.err().expect("slow handler must yield Err");
+    assert!(
+        matches!(err, rust2go::IpcError::Timeout { .. }),
+        "slow handler must yield Err(Timeout), got {err}"
+    );
     assert!(
         elapsed < Duration::from_secs(3),
         "wrapper must converge near 1s, took {:?}",
         elapsed
     );
     println!(
-        "md5 converged via Err(String from Timeout) in {:?} (Go sleeps 4s)",
+        "md5 converged via Err(Timeout) in {:?} (Go sleeps 4s)",
         elapsed
     );
 }

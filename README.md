@@ -31,7 +31,7 @@ The async wrapper matches upstream's output shape automatically: plain `async fn
 
 ```toml
 [dependencies]
-rust2go = { package = "rust2go-ipc", version = "0.2" }
+rust2go = { package = "rust2go-ipc", version = "0.2.4" }
 rust2go-ipc-result = "0.2"
 tokio = { version = "1", features = ["time"] }
 ```
