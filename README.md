@@ -4,9 +4,9 @@ Companion `#[r2g_result]` attribute for [`rust2go-ipc`](https://crates.io/crates
 
 ## The problem
 
-`#[r2g]` async methods return a bare `impl Future<Output = (Resp, (Req...))>`. When the Go side is slow, wedges, or disconnects, the IPC runtime drops the slot writer on error but does **not** wake the future. Awaiting such a call can hang forever, and with `panic = "abort"` a panic-based fallback would kill the whole process.
+`#[r2g]` async methods return a bare future (`Output = Resp`, or `(Resp, (Req...))` with `#[drop_safe_ret]`). When the Go side is slow, wedges, or disconnects, the IPC runtime drops the slot writer on error but does **not** wake the future. Awaiting such a call can hang forever, and with `panic = "abort"` a panic-based fallback would kill the whole process.
 
-Raw sync calls have the same issue in a different form: connect/write/read failures, bad response ids, error statuses and the sync deadline all make `dispatch_sync` panic because upstream's generated signature has no error channel.
+Raw sync calls have the same issue in a different form: connect/write/read failures, bad response ids, error statuses and the sync deadline all panic at the generated stub because upstream's signature has no error channel.
 
 ## The fix
 
@@ -23,7 +23,9 @@ pub fn newID(req: EmptyRequest) -> Result<OrderResponse, rust2go::IpcError> { /*
 pub fn Init(req: EmptyRequest) -> Result<(), rust2go::IpcError> { /* ... */ }
 ```
 
-Async timeout drops the inner future and releases the slot. Sync/oneway wrappers call builder-generated `__r2g_try_C<Trait>_<method>` stubs that use `dispatch_sync_result` / `dispatch_oneway_result` instead of the legacy panic path. Business error handling (e.g. `err_msg`) is untouched — a successful response still returns `Ok(resp)`.
+Async timeout drops the inner future (the slot is reclaimed later by the runtime's TTL sweep; the writer is not forcibly woken). Sync/oneway wrappers call builder-generated `__r2g_try_C<Trait>_<method>` stubs that use `dispatch_sync_result` / `dispatch_oneway_result` instead of the legacy panic path. Business error handling (e.g. `err_msg`) is untouched — a successful response still returns `Ok(resp)`.
+
+The async wrapper matches upstream's output shape automatically: plain `async fn` produces bare `Resp`, while `#[drop_safe_ret] async fn` produces `(Resp, (Req...))`; reference and `#[go_pass_struct]` parameters are supported on the Result path too.
 
 ## Usage
 

@@ -130,18 +130,46 @@ fn expand(trat: ItemTrait) -> syn::Result<proc_macro2::TokenStream> {
         };
 
         if f.sig.asyncness.is_some() {
-            // The declared response type is the first element of the raw
-            // future's Output tuple: (Resp, (Req...)). Recover it from `-> Resp`.
+            // Upstream #[r2g] shapes the raw future's Output as
+            //   - `(Resp, (Req...))` when the method carries #[drop_safe_ret]
+            //   - bare `Resp` otherwise.
+            // The wrapper must destructure accordingly, or a plain async method
+            // fails to compile (E0308: expected Resp, found tuple).
+            let drop_safe_ret = f.attrs.iter().any(|a| {
+                a.path()
+                    .segments
+                    .last()
+                    .is_some_and(|seg| seg.ident == "drop_safe_ret")
+            });
+            let drop_safe = f.attrs.iter().any(|a| {
+                a.path()
+                    .segments
+                    .last()
+                    .is_some_and(|seg| seg.ident == "drop_safe")
+            });
+            let ok_pattern = if drop_safe_ret {
+                quote! { ::core::result::Result::Ok((__r2g_resp, _)) }
+            } else {
+                quote! { ::core::result::Result::Ok(__r2g_resp) }
+            };
+            // Without #[drop_safe] / #[drop_safe_ret], upstream marks the Impl
+            // method `unsafe fn`, so the call needs an unsafe block. Keep the
+            // safe case free of `unsafe` to avoid `unnecessary_unsafe` lints.
+            let fut_expr = if drop_safe || drop_safe_ret {
+                quote! { #impl_ident::#method(#(#arg_names),*) }
+            } else {
+                quote! { unsafe { #impl_ident::#method(#(#arg_names),*) } }
+            };
             methods.push(quote! {
                 pub async fn #method(#inputs) -> ::core::result::Result<#resp_ty, ::rust2go::IpcError> {
-                    let __r2g_fut = #impl_ident::#method(#(#arg_names),*);
+                    let __r2g_fut = #fut_expr;
                     // Read the env once so the reported secs always matches the
                     // deadline actually applied (no drift if the env changes
                     // between two reads on a hot-reloaded deployment).
                     let __r2g_secs = ::rust2go::async_timeout_secs();
                     let __r2g_deadline = ::core::time::Duration::from_secs(__r2g_secs);
                     match ::tokio::time::timeout(__r2g_deadline, __r2g_fut).await {
-                        ::core::result::Result::Ok((__r2g_resp, _)) => {
+                        #ok_pattern => {
                             ::core::result::Result::Ok(__r2g_resp)
                         }
                         ::core::result::Result::Err(_) => {
@@ -209,6 +237,32 @@ mod tests {
         assert!(out.contains("IpcError :: Timeout"));
         assert!(out.contains("GolangCallImpl :: md5"));
         assert!(out.contains("Result < Resp , :: rust2go :: IpcError >"));
+    }
+
+    #[test]
+    fn async_wrapper_matches_upstream_output_shape() {
+        // #[drop_safe_ret] makes upstream's future Output a tuple
+        // (Resp, (Req...)); without it the Output is a bare Resp. The wrapper
+        // must destructure accordingly or plain async methods fail to compile.
+        let with = expand_str("pub trait T { #[drop_safe_ret] async fn a(req: Req) -> Resp; }");
+        assert!(
+            with.contains("Ok ((__r2g_resp , _))"),
+            "drop_safe_ret must destructure the (Resp, Req) tuple"
+        );
+        assert!(
+            !with.contains("unsafe { TImpl"),
+            "safe method needs no unsafe"
+        );
+
+        let without = expand_str("pub trait T { async fn a(req: Req) -> Resp; }");
+        assert!(
+            without.contains("Ok (__r2g_resp)"),
+            "plain async must destructure a bare Resp"
+        );
+        assert!(
+            without.contains("unsafe { TImpl :: a"),
+            "non-drop-safe Impl method is unsafe fn"
+        );
     }
 
     #[test]
