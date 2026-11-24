@@ -49,7 +49,7 @@ use proc_macro::TokenStream;
 use quote::quote;
 use syn::{
     parse_macro_input, parse_quote, punctuated::Punctuated, FnArg, Ident, ItemTrait, Meta, Pat,
-    Path, ReturnType, Token, TraitItem,
+    Path, ReturnType, Token, TraitItem, Type,
 };
 
 /// Generate a parallel `<Trait>Result` type with timeout-bounded async methods.
@@ -117,6 +117,26 @@ fn expand(trat: ItemTrait) -> syn::Result<proc_macro2::TokenStream> {
                 FnArg::Receiver(_) => None,
             })
             .collect();
+        // The pre-flight helper takes `&OwnedTy` for every parameter. Owned
+        // args are borrowed; a trait param already declared `&T` is forwarded
+        // as-is so the wrapper keeps ownership for the subsequent Impl call.
+        let preflight_args: Vec<proc_macro2::TokenStream> = inputs
+            .iter()
+            .filter_map(|arg| match arg {
+                FnArg::Typed(pat) => match &*pat.pat {
+                    Pat::Ident(id) => {
+                        let name = &id.ident;
+                        Some(if matches!(&*pat.ty, Type::Reference(_)) {
+                            quote! { #name }
+                        } else {
+                            quote! { &#name }
+                        })
+                    }
+                    _ => None,
+                },
+                FnArg::Receiver(_) => None,
+            })
+            .collect();
 
         let resp_ty = match &f.sig.output {
             ReturnType::Type(_, ty) => quote! { #ty },
@@ -130,6 +150,13 @@ fn expand(trat: ItemTrait) -> syn::Result<proc_macro2::TokenStream> {
         };
 
         if f.sig.asyncness.is_some() {
+            // `dispatch` rejects >64 MiB payloads by panicking at poll time.
+            // The upstream slot has no error channel, so the wrapper must
+            // pre-flight the encoded size before creating the future.
+            let payload_len_stub = Ident::new(
+                &format!("__r2g_payload_len_C{}_{}", trait_ident, method),
+                method.span(),
+            );
             // Upstream #[r2g] shapes the raw future's Output as
             //   - `(Resp, (Req...))` when the method carries #[drop_safe_ret]
             //   - bare `Resp` otherwise.
@@ -162,6 +189,21 @@ fn expand(trat: ItemTrait) -> syn::Result<proc_macro2::TokenStream> {
             };
             methods.push(quote! {
                 pub async fn #method(#inputs) -> ::core::result::Result<#resp_ty, ::rust2go::IpcError> {
+                    // The generated helper borrows every argument and encodes
+                    // exactly like the async stub, so this check adds no error
+                    // path inside the future (where a panic would be fatal
+                    // under panic=abort).
+                    let __r2g_len = unsafe {
+                        #binding::#payload_len_stub(#(#preflight_args),*)
+                    };
+                    if __r2g_len > ::rust2go::ipc::MAX_PAYLOAD {
+                        return ::core::result::Result::Err(
+                            ::rust2go::IpcError::PayloadTooLarge {
+                                method: #method_name.to_string(),
+                                len: __r2g_len,
+                            },
+                        );
+                    }
                     let __r2g_fut = #fut_expr;
                     // Read the env once so the reported secs always matches the
                     // deadline actually applied (no drift if the env changes
@@ -263,6 +305,29 @@ mod tests {
             without.contains("unsafe { TImpl :: a"),
             "non-drop-safe Impl method is unsafe fn"
         );
+    }
+
+    #[test]
+    fn async_wrapper_preflights_payload_size_before_creating_future() {
+        let out = expand_str("pub trait GolangCall { async fn upload(req: Req) -> Resp; }");
+        assert!(
+            out.contains("binding :: __r2g_payload_len_CGolangCall_upload"),
+            "async wrapper must call the generated length helper"
+        );
+        assert!(
+            out.contains("rust2go :: ipc :: MAX_PAYLOAD"),
+            "oversized async payload must be checked against the protocol limit"
+        );
+        assert!(
+            out.contains("IpcError :: PayloadTooLarge"),
+            "oversized async payload must converge on a Result error"
+        );
+        // The check must happen before the upstream future is constructed.
+        let len_pos = out
+            .find("__r2g_payload_len_CGolangCall_upload")
+            .expect("length helper call");
+        let fut_pos = out.find("GolangCallImpl :: upload").expect("future call");
+        assert!(len_pos < fut_pos, "payload check must precede Impl call");
     }
 
     #[test]

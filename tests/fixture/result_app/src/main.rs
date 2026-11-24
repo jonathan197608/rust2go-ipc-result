@@ -35,6 +35,22 @@ async fn main() {
     std::env::set_var("RUST2GO_IPC_ASYNC_TIMEOUT_SECS", "1");
     std::env::set_var("RUST2GO_IPC_SYNC_TIMEOUT_SECS", "1");
 
+    // Oversized async payloads must converge on Err(PayloadTooLarge) before
+    // the upstream future is polled; in panic=abort binaries a dispatch-time
+    // panic would kill the process.
+    let huge = HashRequest {
+        message: "x".repeat(64 * 1024 * 1024 + 1),
+    };
+    let err = match GolangCallResult::md5(huge).await {
+        Ok(_) => panic!("oversized async payload must not succeed"),
+        Err(e) => e,
+    };
+    assert!(
+        matches!(err, rust2go::IpcError::PayloadTooLarge { .. }),
+        "oversized async payload must yield PayloadTooLarge, got {err}"
+    );
+    println!("oversized async payload converged via Err({err})");
+
     let ok = call_ping_take_ok(EmptyRequest {})
         .await
         .expect("ping must succeed");
