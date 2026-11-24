@@ -135,14 +135,19 @@ fn expand(trat: ItemTrait) -> syn::Result<proc_macro2::TokenStream> {
             methods.push(quote! {
                 pub async fn #method(#inputs) -> ::core::result::Result<#resp_ty, ::rust2go::IpcError> {
                     let __r2g_fut = #impl_ident::#method(#(#arg_names),*);
-                    match ::tokio::time::timeout(::rust2go::async_timeout(), __r2g_fut).await {
+                    // Read the env once so the reported secs always matches the
+                    // deadline actually applied (no drift if the env changes
+                    // between two reads on a hot-reloaded deployment).
+                    let __r2g_secs = ::rust2go::async_timeout_secs();
+                    let __r2g_deadline = ::core::time::Duration::from_secs(__r2g_secs);
+                    match ::tokio::time::timeout(__r2g_deadline, __r2g_fut).await {
                         ::core::result::Result::Ok((__r2g_resp, _)) => {
                             ::core::result::Result::Ok(__r2g_resp)
                         }
                         ::core::result::Result::Err(_) => {
                             ::core::result::Result::Err(::rust2go::IpcError::Timeout {
                                 method: #method_name,
-                                secs: ::rust2go::async_timeout_secs(),
+                                secs: __r2g_secs,
                             })
                         }
                     }
@@ -200,6 +205,7 @@ mod tests {
     fn wraps_async_method_with_timeout_and_result() {
         let out = expand_str("pub trait GolangCall { async fn md5(req: Req) -> Resp; }");
         assert!(out.contains("tokio :: time :: timeout"));
+        assert!(out.contains("async_timeout_secs"));
         assert!(out.contains("IpcError :: Timeout"));
         assert!(out.contains("GolangCallImpl :: md5"));
         assert!(out.contains("Result < Resp , :: rust2go :: IpcError >"));
