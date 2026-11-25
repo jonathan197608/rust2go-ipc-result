@@ -123,7 +123,12 @@ fn expand(trat: ItemTrait) -> syn::Result<proc_macro2::TokenStream> {
         // the schema side; keep the guard here too so this standalone macro
         // fails fast with a clear diagnostic even with pre-generated bindings.
         for name in &arg_names {
-            if name.to_string().starts_with("__r2g_") {
+            // `Ident::to_string()` keeps the raw-identifier prefix, so
+            // `r#__r2g_len` would slip past a direct starts_with check even
+            // though it is the same identifier as the generated local.
+            let spelled = name.to_string();
+            let bare = spelled.strip_prefix("r#").unwrap_or(&spelled);
+            if bare.starts_with("__r2g_") {
                 return Err(syn::Error::new_spanned(
                     name,
                     "#[r2g_result]: parameter names starting with `__r2g_` are reserved",
@@ -421,6 +426,20 @@ mod tests {
         let trat: ItemTrait =
             syn::parse_str("pub trait T { fn f(__r2g_len: Req) -> Resp; }").unwrap();
         let err = expand(trat).expect_err("reserved parameter must be rejected");
+        assert!(
+            err.to_string().contains("__r2g_"),
+            "diagnostic must name the reserved prefix, got: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_raw_identifier_with_reserved_prefix() {
+        // `Ident::to_string()` keeps the `r#` prefix, so a naive
+        // starts_with("__r2g_") guard misses `r#__r2g_len` — which is the same
+        // identifier as the generated `__r2g_len` local after parsing.
+        let trat: ItemTrait =
+            syn::parse_str("pub trait T { fn f(r#__r2g_len: Req) -> Resp; }").unwrap();
+        let err = expand(trat).expect_err("raw reserved parameter must be rejected");
         assert!(
             err.to_string().contains("__r2g_"),
             "diagnostic must name the reserved prefix, got: {err}"
